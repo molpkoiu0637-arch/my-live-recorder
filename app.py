@@ -1,178 +1,158 @@
-"""
-Real Private Live Recorder - FINAL VERSION for Cloud Deploy
-แก้ไขให้ทำงานบน Render/Railway ได้จริง
-"""
-from flask import Flask, request, jsonify, send_from_directory, render_template_string
-import os, uuid, threading, subprocess, json
-from datetime import datetime
+
+import os, re, uuid, subprocess, threading, time, requests
+from flask import Flask, request, jsonify, render_template_string, send_from_directory
 
 app = Flask(__name__)
-DOWNLOAD_DIR = "downloads"
+DOWNLOAD_DIR = "/tmp/recordings"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
 jobs = {}
 
-HTML = """
-<!DOCTYPE html>
-<html lang="th">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>My Private Live Recorder - REAL CLOUD</title>
-<script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-black text-white min-h-screen p-4">
-<div class="max-w-md mx-auto pb-20">
-<div class="flex items-center justify-between mt-2">
-<h1 class="text-xl font-bold">🔴 REAL CLOUD <span class="text-[10px] bg-green-500 text-black px-2 py-1 rounded-full ml-1">ของจริง • ใช้งานได้</span></h1>
-<div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+TEMPLATE = """
+<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>REAL CLOUD V3 - YouTube Fixed</title>
+<style>
+body{background:#0a0a0a;color:#fff;font-family:sans-serif;padding:12px}
+.card{background:#1a1a1a;border-radius:16px;padding:16px;margin-bottom:12px}
+input,select{width:100%;background:#222;color:#fff;border:1px solid #333;border-radius:12px;padding:14px;font-size:16px;margin-bottom:10px;box-sizing:border-box}
+button{background:linear-gradient(90deg,#8a2be2,#ff00ff);color:#fff;border:none;border-radius:12px;padding:16px;width:100%;font-size:18px;font-weight:bold}
+.job{background:#1a1a1a;border-radius:12px;padding:12px;margin-top:10px;border-left:4px solid #333;word-break:break-all}
+.job.ok{border-color:#0f0}.job.error{border-color:#f00}.job.run{border-color:#ff0}
+small{color:#888}
+pre{white-space:pre-wrap;font-size:11px;background:#000;padding:8px;border-radius:8px;max-height:200px;overflow:auto}
+</style></head>
+<body>
+<h2>🔴 REAL CLOUD <span style="background:#0f0;color:#000;font-size:12px;padding:4px 8px;border-radius:8px">V3 YouTube Fixed</span></h2>
+<p style="color:#888">อัดยาวไม่จำกัด • แก้ YouTube / Bigo แล้ว</p>
+<div class="card">
+<input id="url" placeholder="วางลิงก์ YouTube / Bigo ID / TikTok">
+<select id="q"><option>480p SD</option><option selected>720p HD</option><option>1080p FHD</option><option>best</option></select>
+<button onclick="start()">เริ่มบันทึกทันที</button>
+<div id="msg" style="margin-top:10px"></div>
 </div>
-<p class="text-gray-400 text-xs mt-1">อัดยาวไม่จำกัด • ทุกคุณภาพฟรี • เปิดจากมือถือได้</p>
-
-<div class="bg-zinc-900 rounded-2xl p-4 mt-5 border border-zinc-800">
-<input id="url" placeholder="วางลิงก์ TikTok / YouTube / Shopee / Twitch / Douyin" class="w-full bg-zinc-800 rounded-xl p-4 text-sm outline-none focus:ring-2 focus:ring-violet-600">
-<div class="grid grid-cols-2 gap-2 mt-3">
-<select id="quality" class="bg-zinc-800 rounded-xl p-3 text-sm">
-<option value="best">Best (สูงสุด)</option>
-<option value="1080">1080p FHD</option>
-<option value="720">720p HD</option>
-<option value="480">480p SD</option>
-</select>
-<select id="mode" class="bg-zinc-800 rounded-xl p-3 text-sm">
-<option value="live">ไลฟ์สด (บันทึกตอนนี้)</option>
-<option value="video">วิดีโอที่ลงแล้ว</option>
-</select>
-</div>
-<button onclick="startRecord()" id="btn" class="w-full bg-gradient-to-r from-violet-600 to-fuchsia-500 rounded-xl p-4 mt-3 font-bold text-base shadow-lg shadow-violet-900/30">เริ่มบันทึกทันที</button>
-<div id="status" class="text-sm text-violet-300 mt-3 hidden p-3 bg-violet-950/30 rounded-xl"></div>
-</div>
-
-<h2 class="font-bold mt-7 mb-3 flex items-center gap-2"><span class="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>กำลังบันทึก (<span id="count">0</span>)</h2>
-<div id="jobs" class="space-y-3"></div>
-
-<div class="mt-8 p-4 bg-yellow-950/30 border border-yellow-800/50 rounded-2xl text-xs text-yellow-200/80">
-<b class="text-yellow-300">⚠️ ใช้งานอย่างถูกต้อง:</b> ใช้บันทึกเฉพาะไลฟ์ของตัวเองหรือได้รับอนุญาตเท่านั้น การบันทึกไลฟ์ผู้อื่นโดยไม่ได้รับอนุญาตอาจผิดข้อกำหนดแพลตฟอร์ม
-</div>
-</div>
-
+<div id="list"></div>
 <script>
-async function startRecord(){
- const url = document.getElementById('url').value.trim();
- if(!url){ alert('วางลิงก์ก่อนครับ'); return; }
- const quality = document.getElementById('quality').value;
- const btn = document.getElementById('btn');
- btn.disabled = true;
- btn.innerText = 'กำลังเริ่ม...';
- try {
-  const res = await fetch('/record', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, quality})});
-  const data = await res.json();
-  const st = document.getElementById('status');
-  st.classList.remove('hidden');
-  st.innerText = data.message;
-  document.getElementById('url').value = '';
-  loadJobs();
- } catch(e){ alert('Error: '+e); }
- btn.disabled = false;
- btn.innerText = 'เริ่มบันทึกทันที';
+async function start(){
+ let u=document.getElementById('url').value.trim();
+ if(!u){alert('ใส่ลิงก์ก่อน');return}
+ document.getElementById('msg').innerHTML='⏳ กำลังเริ่ม...';
+ let r=await fetch('/api/record',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u,quality:document.getElementById('q').value})});
+ let j=await r.json();
+ document.getElementById('msg').innerHTML = r.ok ? '✅ เริ่มแล้ว ID '+j.id : '❌ '+j.error;
+ load();
 }
-
-async function loadJobs(){
- try {
-  const res = await fetch('/jobs');
-  const jobs = await res.json();
-  document.getElementById('count').innerText = jobs.filter(j=>j.status=='recording').length;
-  document.getElementById('jobs').innerHTML = jobs.map(j=>`
-    <div class="bg-zinc-900 rounded-2xl p-4 border border-zinc-800">
-      <div class="flex justify-between items-start gap-2">
-        <div class="text-sm truncate w-3/4 text-gray-200">${j.url}</div>
-        <span class="text-[10px] px-2 py-1 rounded-full shrink-0 ${j.status=='recording'?'bg-red-500/20 text-red-400 border border-red-500/30':j.status=='done'?'bg-green-500/20 text-green-400 border border-green-500/30':'bg-zinc-700 text-gray-300'}">${j.status=='recording'?'● กำลังอัด':j.status=='done'?'✓ เสร็จแล้ว':j.status}</span>
-      </div>
-      <div class="text-[11px] text-gray-500 mt-1">${j.started} • ${j.quality} • ID:${j.id}</div>
-      ${j.file?`<a href="/download/${j.file}" class="block mt-3 bg-white text-black text-center rounded-xl p-3 text-sm font-bold">⬇️ ดาวน์โหลดไฟล์</a>`:''}
-      <div class="text-[11px] text-gray-400 mt-2 font-mono bg-black/50 p-2 rounded-lg truncate">${(j.log||'').slice(-200)}</div>
-    </div>
-  `).join('') || '<div class="text-center text-gray-600 text-sm py-10">ยังไม่มีงานบันทึก วางลิงก์ด้านบนได้เลย</div>';
- } catch(e){}
+async function load(){
+ let r=await fetch('/api/jobs'); let j=await r.json();
+ let h=''; let c=0;
+ for(let id in j){
+  let x=j[id]; if(x.status=='recording') c++;
+  h+=`<div class="job ${x.status=='recording'?'run':x.status=='done'?'ok':'error'}">
+  <b>${x.url}</b> <span style="float:right;background:#333;padding:2px 8px;border-radius:8px;font-size:12px">${x.status}</span><br>
+  <small>${x.time} • ${x.quality} • ID:${id.slice(0,8)}</small>
+  <pre>${x.log||''}</pre>
+  ${x.file ? `<a href="/download/${id}" style="color:#0f0">⬇️ ดาวน์โหลด</a>`:''}
+  </div>`;
+ }
+ document.getElementById('list').innerHTML='<h3>🔴 กำลังบันทึก ('+c+')</h3>'+h;
 }
-setInterval(loadJobs, 2500);
-loadJobs();
+setInterval(load,3000); load();
 </script>
-</body>
-</html>
+</body></html>
 """
 
-def run_yt_dlp(job_id, url, quality):
-    job = jobs[job_id]
-    filename = f"{job_id}.mp4"
-    filepath = os.path.join(DOWNLOAD_DIR, filename)
-    
-    if quality == "best":
-        fmt = "bestvideo+bestaudio/best"
-    else:
-        fmt = f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+def normalize_url(raw):
+    raw=raw.strip()
+    if re.match(r'^\d{5,}$', raw):
+        return f'https://www.bigo.tv/{raw}'
+    if 'slink.bigovideo.tv' in raw or 'bigovideo.tv' in raw:
+        try:
+            r=requests.get(raw,allow_redirects=True,timeout=10,headers={'User-Agent':'Mozilla/5.0'})
+            m=re.search(r'bigo\.tv/(\d+)', r.url)
+            if m: return f'https://www.bigo.tv/{m.group(1)}'
+            return r.url
+        except: return raw
+    if 'youtu.be/' in raw:
+        # convert youtu.be/VIDEOID to youtube.com/watch?v=VIDEOID
+        m=re.search(r'youtu\.be/([A-Za-z0-9_-]+)', raw)
+        if m: return f'https://www.youtube.com/watch?v={m.group(1)}'
+    if '/live/' in raw and 'youtube.com' in raw:
+        # /live/VIDEOID -> /watch?v=VIDEOID for yt-dlp compatibility
+        m=re.search(r'/live/([A-Za-z0-9_-]+)', raw)
+        if m: return f'https://www.youtube.com/watch?v={m.group(1)}'
+    return raw
 
-    if ".m3u8" in url:
-        cmd = ["ffmpeg", "-y", "-i", url, "-c", "copy", filepath]
-    else:
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "-f", fmt,
-            "-o", filepath,
-            "--merge-output-format", "mp4",
-            "--no-warnings",
-            "--live-from-start",
-            url
-        ]
+def run_job(job_id, url, quality):
+    job=jobs[job_id]
+    norm=normalize_url(url)
+    job['url']=norm
+    job['log']=f"🔗 ใช้ลิงก์: {norm}\n⏳ กำลังเช็ค..."
+    q_map={'480p SD':'480','720p HD':'720','1080p FHD':'1080','best':'best'}
+    q=q_map.get(quality,'720')
+    out=os.path.join(DOWNLOAD_DIR, f"{job_id}.%(ext)s")
+    # YT-DLP command optimized for YouTube bypass on cloud
+    cmd=[
+        "yt-dlp",
+        "--no-playlist",
+        "-f", f"best[height<={q}]/best" if q!='best' else "best",
+        "-o", out,
+        "--merge-output-format","mp4",
+        "--user-agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "--extractor-args","youtube:player_client=android,web;po_token=web+android",
+        "--extractor-retries","5",
+        "--socket-timeout","30",
+        "--no-check-certificate",
+        norm
+    ]
+    if 'bigo.tv' in norm:
+        cmd.extend(["--add-header","Referer:https://www.bigo.tv/"])
 
     try:
-        job["log"] = f"เริ่ม: {' '.join(cmd)[:150]}"
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        proc=subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        logs=""
         for line in proc.stdout:
-            job["log"] = line.strip()[-400:]
-        proc.wait()
-        if os.path.exists(filepath) and os.path.getsize(filepath) > 1000:
-            job["status"] = "done"
-            job["file"] = filename
-            size_mb = os.path.getsize(filepath)//1024//1024
-            job["log"] = f"✅ เสร็จแล้ว {size_mb} MB - กดดาวน์โหลดได้เลย"
+            logs+=line
+            if len(logs)>5000: logs=logs[-5000:]
+            job['log']=logs[-2000:]
+            if proc.poll() is not None:
+                break
+        if proc.returncode==0:
+            # find file
+            import glob
+            files=glob.glob(os.path.join(DOWNLOAD_DIR, f"{job_id}.*"))
+            if files:
+                job['file']=files[0]
+                job['status']='done'
+                job['log']=f"✅ สำเร็จ!\n{logs[-1000:]}"
+            else:
+                job['status']='error'
+                job['log']=f"❌ เสร็จแต่หาไฟล์ไม่เจอ\n{logs[-2000:]}"
         else:
-            job["status"] = "error"
-            job["log"] = "❌ ลิงก์ไม่รองรับ หรือไลฟ์จบแล้ว ลองเช็คลิงก์อีกที"
+            job['status']='error'
+            job['log']=f"❌ Error:\n{logs[-3000:]}"
     except Exception as e:
-        job["status"] = "error"
-        job["log"] = f"Error: {str(e)[:300]}"
+        job['status']='error'
+        job['log']=f"Exception: {e}"
 
-@app.route("/")
-def index():
-    return render_template_string(HTML)
+@app.route('/')
+def index(): return render_template_string(TEMPLATE)
 
-@app.route("/record", methods=["POST"])
-def record():
-    data = request.get_json()
-    url = data.get("url","").strip()
-    quality = data.get("quality","best")
-    if not url:
-        return jsonify({"message": "กรุณาวางลิงก์"}), 400
-    job_id = uuid.uuid4().hex[:8]
-    jobs[job_id] = {
-        "id": job_id, "url": url, "quality": quality,
-        "status": "recording",
-        "started": datetime.now().strftime("%H:%M:%S %d/%m"),
-        "file": None, "log": "กำลังเชื่อมต่อ..."
-    }
-    threading.Thread(target=run_yt_dlp, args=(job_id, url, quality), daemon=True).start()
-    return jsonify({"message": f"✅ เริ่มอัดแล้ว! ID {job_id} - เลื่อนลงดูสถานะ", "job_id": job_id})
+@app.route('/api/record', methods=['POST'])
+def api_record():
+    data=request.json
+    url=data.get('url','').strip()
+    if not url: return jsonify({'error':'ใส่ลิงก์ก่อน'}),400
+    jid=uuid.uuid4().hex[:12]
+    jobs[jid]={'url':url,'quality':data.get('quality','720p HD'),'status':'recording','time':time.strftime("%H:%M:%S %d/%m"),'log':'เริ่มแล้ว...','file':None}
+    threading.Thread(target=run_job, args=(jid, url, data.get('quality','720p HD')), daemon=True).start()
+    return jsonify({'id':jid})
 
-@app.route("/jobs")
-def get_jobs():
-    return jsonify(list(jobs.values())[::-1])
+@app.route('/api/jobs')
+def api_jobs(): return jsonify(jobs)
 
-@app.route("/download/<filename>")
-def download_file(filename):
-    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
+@app.route('/download/<jid>')
+def download(jid):
+    j=jobs.get(jid)
+    if not j or not j.get('file') or not os.path.exists(j['file']): return "File not found",404
+    return send_from_directory(DOWNLOAD_DIR, os.path.basename(j['file']), as_attachment=True)
 
-# สำหรับ gunicorn
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+if __name__=='__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT',10000)))
