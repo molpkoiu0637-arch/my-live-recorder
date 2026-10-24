@@ -1,178 +1,171 @@
-"""
-Real Private Live Recorder - FINAL VERSION for Cloud Deploy
-แก้ไขให้ทำงานบน Render/Railway ได้จริง
-"""
-from flask import Flask, request, jsonify, send_from_directory, render_template_string
-import os, uuid, threading, subprocess, json
+
+import os, re, subprocess, threading, uuid, time, requests, json
+from flask import Flask, request, jsonify
 from datetime import datetime
 
 app = Flask(__name__)
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
+RECORD_DIR = "/tmp/recordings"
+os.makedirs(RECORD_DIR, exist_ok=True)
 jobs = {}
 
-HTML = """
-<!DOCTYPE html>
-<html lang="th">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>My Private Live Recorder - REAL CLOUD</title>
-<script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-black text-white min-h-screen p-4">
-<div class="max-w-md mx-auto pb-20">
-<div class="flex items-center justify-between mt-2">
-<h1 class="text-xl font-bold">🔴 REAL CLOUD <span class="text-[10px] bg-green-500 text-black px-2 py-1 rounded-full ml-1">ของจริง • ใช้งานได้</span></h1>
-<div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-</div>
-<p class="text-gray-400 text-xs mt-1">อัดยาวไม่จำกัด • ทุกคุณภาพฟรี • เปิดจากมือถือได้</p>
-
-<div class="bg-zinc-900 rounded-2xl p-4 mt-5 border border-zinc-800">
-<input id="url" placeholder="วางลิงก์ TikTok / YouTube / Shopee / Twitch / Douyin" class="w-full bg-zinc-800 rounded-xl p-4 text-sm outline-none focus:ring-2 focus:ring-violet-600">
-<div class="grid grid-cols-2 gap-2 mt-3">
-<select id="quality" class="bg-zinc-800 rounded-xl p-3 text-sm">
-<option value="best">Best (สูงสุด)</option>
-<option value="1080">1080p FHD</option>
-<option value="720">720p HD</option>
-<option value="480">480p SD</option>
-</select>
-<select id="mode" class="bg-zinc-800 rounded-xl p-3 text-sm">
-<option value="live">ไลฟ์สด (บันทึกตอนนี้)</option>
-<option value="video">วิดีโอที่ลงแล้ว</option>
-</select>
-</div>
-<button onclick="startRecord()" id="btn" class="w-full bg-gradient-to-r from-violet-600 to-fuchsia-500 rounded-xl p-4 mt-3 font-bold text-base shadow-lg shadow-violet-900/30">เริ่มบันทึกทันที</button>
-<div id="status" class="text-sm text-violet-300 mt-3 hidden p-3 bg-violet-950/30 rounded-xl"></div>
-</div>
-
-<h2 class="font-bold mt-7 mb-3 flex items-center gap-2"><span class="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>กำลังบันทึก (<span id="count">0</span>)</h2>
-<div id="jobs" class="space-y-3"></div>
-
-<div class="mt-8 p-4 bg-yellow-950/30 border border-yellow-800/50 rounded-2xl text-xs text-yellow-200/80">
-<b class="text-yellow-300">⚠️ ใช้งานอย่างถูกต้อง:</b> ใช้บันทึกเฉพาะไลฟ์ของตัวเองหรือได้รับอนุญาตเท่านั้น การบันทึกไลฟ์ผู้อื่นโดยไม่ได้รับอนุญาตอาจผิดข้อกำหนดแพลตฟอร์ม
-</div>
-</div>
-
+HTML_PAGE = """
+<!DOCTYPE html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>REAL CLOUD V9</title>
+<style>body{background:#111;color:#fff;font-family:system-ui;padding:20px}input,select,button{width:100%;padding:14px;margin:8px 0;border-radius:12px;border:none;font-size:16px}button{background:linear-gradient(90deg,#a855f7,#ec4899);color:#fff;font-weight:bold}.card{background:#1e1e1e;border-radius:16px;padding:14px;margin:12px 0;border-left:4px solid #22c55e}.card.error{border-color:#ef4444}pre{background:#000;padding:10px;border-radius:8px;overflow:auto;white-space:pre-wrap;font-size:12px;max-height:300px}.badge{background:#22c55e;color:#000;padding:4px 10px;border-radius:20px;font-size:13px}</style>
+</head><body>
+<h2>REAL CLOUD <span class=badge>V9 BIGO DIRECT</span></h2>
+<p style="color:#aaa">รองรับ slink + sid แบบใหม่ บายพาสบล็อก IP</p>
+<input id="url" placeholder="วางลิงก์ Bigo / YouTube / TikTok">
+<select id="q"><option>best</option><option>1080p</option><option>720p</option><option>480p SD</option></select>
+<button onclick="start()">เริ่มบันทึกทันที</button>
+<div id="status" style="padding:10px;color:#22c55e;font-weight:bold"></div><div id="list"></div>
 <script>
-async function startRecord(){
- const url = document.getElementById('url').value.trim();
- if(!url){ alert('วางลิงก์ก่อนครับ'); return; }
- const quality = document.getElementById('quality').value;
- const btn = document.getElementById('btn');
- btn.disabled = true;
- btn.innerText = 'กำลังเริ่ม...';
- try {
-  const res = await fetch('/record', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, quality})});
-  const data = await res.json();
-  const st = document.getElementById('status');
-  st.classList.remove('hidden');
-  st.innerText = data.message;
-  document.getElementById('url').value = '';
-  loadJobs();
- } catch(e){ alert('Error: '+e); }
- btn.disabled = false;
- btn.innerText = 'เริ่มบันทึกทันที';
+async function start(){
+  let raw=document.getElementById('url').value;
+  if(!raw){alert('วางลิงก์ก่อน');return;}
+  let q=document.getElementById('q').value;
+  document.getElementById('status').innerHTML='กำลังเริ่ม...';
+  let r=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:raw,quality:q})});
+  let j=await r.json();
+  document.getElementById('status').innerHTML='OK ID '+j.id+' URL:'+j.url.slice(0,60);
+  load();
 }
-
-async function loadJobs(){
- try {
-  const res = await fetch('/jobs');
-  const jobs = await res.json();
-  document.getElementById('count').innerText = jobs.filter(j=>j.status=='recording').length;
-  document.getElementById('jobs').innerHTML = jobs.map(j=>`
-    <div class="bg-zinc-900 rounded-2xl p-4 border border-zinc-800">
-      <div class="flex justify-between items-start gap-2">
-        <div class="text-sm truncate w-3/4 text-gray-200">${j.url}</div>
-        <span class="text-[10px] px-2 py-1 rounded-full shrink-0 ${j.status=='recording'?'bg-red-500/20 text-red-400 border border-red-500/30':j.status=='done'?'bg-green-500/20 text-green-400 border border-green-500/30':'bg-zinc-700 text-gray-300'}">${j.status=='recording'?'● กำลังอัด':j.status=='done'?'✓ เสร็จแล้ว':j.status}</span>
-      </div>
-      <div class="text-[11px] text-gray-500 mt-1">${j.started} • ${j.quality} • ID:${j.id}</div>
-      ${j.file?`<a href="/download/${j.file}" class="block mt-3 bg-white text-black text-center rounded-xl p-3 text-sm font-bold">⬇️ ดาวน์โหลดไฟล์</a>`:''}
-      <div class="text-[11px] text-gray-400 mt-2 font-mono bg-black/50 p-2 rounded-lg truncate">${(j.log||'').slice(-200)}</div>
-    </div>
-  `).join('') || '<div class="text-center text-gray-600 text-sm py-10">ยังไม่มีงานบันทึก วางลิงก์ด้านบนได้เลย</div>';
- } catch(e){}
+async function load(){
+  let r=await fetch('/api/list');let j=await r.json();
+  let h='';
+  j.forEach(it=>{
+    h+='<div class="card '+(it.status=='error'?'error':'')+'"><b>'+it.url.slice(0,80)+'</b> <small style=float:right>'+it.status+'</small><br><small>'+it.time+' • '+it.quality+' • ID:'+it.id+'</small><pre>'+(it.log||'').slice(-2000)+'</pre></div>';
+  });
+  document.getElementById('list').innerHTML=h;
 }
-setInterval(loadJobs, 2500);
-loadJobs();
-</script>
-</body>
-</html>
+setInterval(load,3000);load();
+</script></body></html>
 """
 
-def run_yt_dlp(job_id, url, quality):
-    job = jobs[job_id]
-    filename = f"{job_id}.mp4"
-    filepath = os.path.join(DOWNLOAD_DIR, filename)
-    
-    if quality == "best":
-        fmt = "bestvideo+bestaudio/best"
-    else:
-        fmt = f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
-
-    if ".m3u8" in url:
-        cmd = ["ffmpeg", "-y", "-i", url, "-c", "copy", filepath]
-    else:
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "-f", fmt,
-            "-o", filepath,
-            "--merge-output-format", "mp4",
-            "--no-warnings",
-            "--live-from-start",
-            url
-        ]
-
+def resolve_slink(url):
+    url = url.strip()
     try:
-        job["log"] = f"เริ่ม: {' '.join(cmd)[:150]}"
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        for line in proc.stdout:
-            job["log"] = line.strip()[-400:]
-        proc.wait()
-        if os.path.exists(filepath) and os.path.getsize(filepath) > 1000:
-            job["status"] = "done"
-            job["file"] = filename
-            size_mb = os.path.getsize(filepath)//1024//1024
-            job["log"] = f"✅ เสร็จแล้ว {size_mb} MB - กดดาวน์โหลดได้เลย"
-        else:
-            job["status"] = "error"
-            job["log"] = "❌ ลิงก์ไม่รองรับ หรือไลฟ์จบแล้ว ลองเช็คลิงก์อีกที"
+        if "slink.bigovideo.tv" in url or "bigovideo" in url:
+            headers = {"User-Agent":"Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36"}
+            # GET page because JS redirect
+            resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+            text = resp.text
+            # find bigo.tv url in text
+            m = re.search(r"https://www\.bigo\.tv/[^\"'\s]+", text)
+            if m:
+                return m.group(0)
+            m2 = re.search(r"bigo\.tv/sid/[\d_]+", text)
+            if m2:
+                return "https://www."+m2.group(0)
+            # if final url is bigo.tv already
+            if "bigo.tv" in resp.url:
+                return resp.url
     except Exception as e:
-        job["status"] = "error"
-        job["log"] = f"Error: {str(e)[:300]}"
+        print("resolve error", e)
+    return url
+
+def extract_bigo_siteid(url):
+    # from https://www.bigo.tv/sid/2894192156_1821679764_1792823052 or https://www.bigo.tv/2894192156
+    m = re.search(r"/sid/(\d+)_\d+_\d+", url)
+    if m:
+        return m.group(1)
+    m = re.search(r"bigo\.tv/(?:[a-z]{2}/)?(\d{5,})", url)
+    if m:
+        return m.group(1)
+    return None
+
+def get_bigo_hls(site_id):
+    try:
+        headers = {
+            "User-Agent":"Mozilla/5.0",
+            "Referer":"https://www.bigo.tv/",
+            "Origin":"https://www.bigo.tv"
+        }
+        # try new API
+        api_url = f"https://ta.bigo.tv/official_website/studio/getInternalStudioInfo?siteId={site_id}"
+        r = requests.get(api_url, headers=headers, timeout=10)
+        data = r.json()
+        # data structure: data.data.hls or liveUrl
+        j = data.get("data") or data
+        # search for hls
+        for k in ["hls","liveUrl","videoUrl","src","flv","rtmp"]:
+            if k in str(j):
+                pass
+        # brute find m3u8 url
+        txt = json.dumps(data)
+        m = re.search(r"https://[^\"]+\.m3u8[^\"]*", txt)
+        if m:
+            return m.group(0).replace("\\u002F","/").replace("\\","")
+        # alternative endpoint
+        api2 = f"https://www.bigo.tv/official_website/studio/getBigoRoomInfo?siteId={site_id}"
+        r2 = requests.get(api2, headers=headers, timeout=10)
+        m = re.search(r"https://[^\"]+\.m3u8[^\"]*", r2.text)
+        if m:
+            return m.group(0)
+    except Exception as e:
+        print("bigo api error", e)
+    return None
+
+def clean_url(raw):
+    raw = raw.strip()
+    m = re.search(r"https?://[^\s\u4e00-\u9fa5]+", raw)
+    url = m.group(0) if m else raw
+    url = url.strip().strip(')"\'】。')
+    url = resolve_slink(url)
+    url = url.split("?")[0].split("&")[0].rstrip("/")
+    return url
 
 @app.route("/")
-def index():
-    return render_template_string(HTML)
+def home():
+    return HTML_PAGE
 
-@app.route("/record", methods=["POST"])
-def record():
-    data = request.get_json()
-    url = data.get("url","").strip()
+@app.route("/api/start", methods=["POST"])
+def api_start():
+    data = request.json
+    raw_url = data.get("url","").strip()
+    url = clean_url(raw_url)
     quality = data.get("quality","best")
-    if not url:
-        return jsonify({"message": "กรุณาวางลิงก์"}), 400
     job_id = uuid.uuid4().hex[:8]
-    jobs[job_id] = {
-        "id": job_id, "url": url, "quality": quality,
-        "status": "recording",
-        "started": datetime.now().strftime("%H:%M:%S %d/%m"),
-        "file": None, "log": "กำลังเชื่อมต่อ..."
-    }
-    threading.Thread(target=run_yt_dlp, args=(job_id, url, quality), daemon=True).start()
-    return jsonify({"message": f"✅ เริ่มอัดแล้ว! ID {job_id} - เลื่อนลงดูสถานะ", "job_id": job_id})
+    out = os.path.join(RECORD_DIR, f"{job_id}.mp4")
+    jobs[job_id] = {"id":job_id,"url":url,"raw":raw_url,"quality":quality,"status":"starting","log":f"Cleaned URL: {url}\n","time":datetime.now().strftime("%H:%M:%S %d/%m"),"file":out}
+    def run():
+        try:
+            jobs[job_id]["status"]="recording"
+            # BIGO direct mode
+            if "bigo.tv" in url:
+                sid = extract_bigo_siteid(url)
+                jobs[job_id]["log"]+=f"SiteID: {sid}\n"
+                hls = get_bigo_hls(sid) if sid else None
+                if hls:
+                    jobs[job_id]["log"]+=f"Found HLS: {hls[:100]}...\n ใช้ ffmpeg อัดโดยตรง\n"
+                    cmd = ["ffmpeg","-y","-i",hls,"-c","copy",out]
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    for line in proc.stdout:
+                        jobs[job_id]["log"]=(jobs[job_id]["log"]+line)[-5000:]
+                    proc.wait()
+                    jobs[job_id]["status"]="done" if proc.returncode==0 else "error"
+                    return
+                else:
+                    jobs[job_id]["log"]+="ไม่เจอ HLS จาก API ลอง yt-dlp ต่อ...\n"
+            # fallback yt-dlp for all
+            q_map = {"best":"best","1080p":"best[height<=1080]","720p":"best[height<=720]","480p SD":"best[height<=480]"}
+            fmt = q_map.get(quality,"best")
+            cmd = ["yt-dlp","--no-check-certificate","--no-playlist","-f",fmt,"-o",out,"--merge-output-format","mp4",url]
+            jobs[job_id]["log"]+=f"CMD: {' '.join(cmd)}\n"
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in proc.stdout:
+                jobs[job_id]["log"]=(jobs[job_id]["log"]+line)[-5000:]
+            proc.wait()
+            jobs[job_id]["status"]="done" if proc.returncode==0 else "error"
+        except Exception as e:
+            jobs[job_id]["log"]+=f"\nException: {e}\n"
+            jobs[job_id]["status"]="error"
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"id":job_id,"url":url,"raw":raw_url})
 
-@app.route("/jobs")
-def get_jobs():
+@app.route("/api/list")
+def api_list():
     return jsonify(list(jobs.values())[::-1])
 
-@app.route("/download/<filename>")
-def download_file(filename):
-    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
-
-# สำหรับ gunicorn
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
