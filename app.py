@@ -55,13 +55,29 @@ setInterval(load,3000);load();
 """
 
 def clean_url(raw):
-    m = re.search(r"https?://[^\s]+", raw)
-    if m:
-        return m.group(0).strip().strip(')"\'】')
-    m = re.search(r"v\.douyin\.com/[^\s]+", raw)
-    if m:
-        return "https://" + m.group(0)
-    return raw.strip()
+    import requests, re
+    m = re.search(r"https?://[^\s\u4e00-\u9fa5]+", raw)
+    url = m.group(0) if m else raw.strip()
+    url = url.strip().strip(')"\'】')
+    if "bigovideo.tv" in url:
+        try:
+            r = requests.get(url, allow_redirects=True, timeout=10, headers={"User-Agent":"Mozilla/5.0"}, verify=False)
+            if r.url and "bigo.tv" in r.url:
+                url = r.url
+        except:
+            pass
+    url = url.split("?")[0].split("&")[0]
+    if "bigo.tv" in url:
+        msid = re.search(r"bigo.tv/sid/([0-9_]+)", url)
+        if msid:
+            return "https://www.bigo.tv/sid/" + msid.group(1)
+        m2 = re.search(r"bigo.tv/(\d+_\d+_\d+)", url)
+        if m2:
+            return "https://www.bigo.tv/sid/" + m2.group(1)
+        m3 = re.search(r"bigo.tv/(\d+)", url)
+        if m3:
+            return "https://www.bigo.tv/" + m3.group(1)
+    return url.strip()
 
 @app.route("/")
 def home():
